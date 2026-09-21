@@ -1,0 +1,15 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "adpa-poc"
+resolve_s3 = true
+s3_prefix = "adpa-poc"
+region = "eu-central-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "Stage=\"dev\" ProjectName=\"adpa-poc\""
+image_repositories = []
+
+[default.build.parameters]
+cached = true
+parallel = true

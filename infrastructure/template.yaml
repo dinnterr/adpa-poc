@@ -1,0 +1,467 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  ADPA PoC — Adaptive Data Processing Architecture for Intelligent Transport
+  System. Serverless, Free-Tier-only implementation of the cloud-edge
+  architecture described in the thesis (Chapter 2).
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: adpa-poc
+        LOG_LEVEL: INFO
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  ProjectName:
+    Type: String
+    Default: adpa-poc
+
+Resources:
+
+  ############################################################
+  # 1. INGESTION LAYER  (replaces AWS IoT Core / Kinesis)
+  ############################################################
+
+  # Raw event ingress queue — analogue of "AWS IoT Core -> Kinesis Data Streams"
+  RawEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-raw-events-${Stage}"
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 3600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt RawEventsDLQ.Arn
+        maxReceiveCount: 3
+
+  RawEventsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-raw-events-dlq-${Stage}"
+      MessageRetentionPeriod: 86400
+
+  # ------------------------------------------------------------------
+  # Routing queues — one per processing mode (STREAM / MICRO_BATCH / BATCH)
+  # This is the analogue of separate Kinesis/Spark pipelines in the thesis.
+  # ------------------------------------------------------------------
+
+  StreamQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-stream-queue-${Stage}"
+      VisibilityTimeout: 30
+      MessageRetentionPeriod: 900
+
+  MicroBatchQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-microbatch-queue-${Stage}"
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 900
+
+  BatchQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-batch-queue-${Stage}"
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 3600
+
+  # Baseline comparison queue (fixed micro-batch, no ADPA logic)
+  BaselineQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-baseline-queue-${Stage}"
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 900
+
+  ############################################################
+  # 2. STORAGE LAYER
+  ############################################################
+
+  # Data lake analogue (Amazon S3 — legitimately free tier: 5GB/12mo)
+  DataLakeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-datalake-${Stage}-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireRawAfter7Days
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # System state table — S(t): CPU/MEM proxy, queue depth, lambda, R_t
+  SystemStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-system-state-${Stage}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # Threshold table — Θ (theta_up, theta_down, T_base, weights...) with feedback loop updates
+  ThresholdsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-thresholds-${Stage}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  # Metrics table — records every processed event's latency/cost/mode for the experiment
+  MetricsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-metrics-${Stage}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # Processed transport events (analogue of aggregated analytics store / "Redshift")
+  ProcessedEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-processed-events-${Stage}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  ############################################################
+  # 3. EDGE LAYER  (analogue of AWS IoT Greengrass)
+  ############################################################
+
+  EdgeHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-edge-handler-${Stage}"
+      CodeUri: ../src/
+      Handler: edge.edge_handler.lambda_handler
+      Environment:
+        Variables:
+          RAW_QUEUE_URL: !Ref RawEventsQueue
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt RawEventsQueue.QueueName
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /edge/ingest
+            Method: post
+
+  ############################################################
+  # 4. ADPA CONTROLLER LAYER  (§2.3.5 — core of the thesis)
+  ############################################################
+
+  AdpaControllerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-adpa-controller-${Stage}"
+      CodeUri: ../src/
+      Handler: adpa_controller.controller_handler.lambda_handler
+      Timeout: 30
+      ReservedConcurrentExecutions: 20
+      Environment:
+        Variables:
+          STREAM_QUEUE_URL: !Ref StreamQueue
+          MICROBATCH_QUEUE_URL: !Ref MicroBatchQueue
+          BATCH_QUEUE_URL: !Ref BatchQueue
+          SYSTEM_STATE_TABLE: !Ref SystemStateTable
+          THRESHOLDS_TABLE: !Ref ThresholdsTable
+          METRICS_TABLE: !Ref MetricsTable
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt StreamQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MicroBatchQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt BatchQueue.QueueName
+        - SQSPollerPolicy:
+            QueueName: !GetAtt RawEventsQueue.QueueName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SystemStateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ThresholdsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetricsTable
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RawEventsQueue.Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 1
+
+  # Periodic feedback-loop recalculation (§2.3.6) — every minute
+  ThresholdRecalcFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-threshold-recalc-${Stage}"
+      CodeUri: ../src/
+      Handler: adpa_controller.controller_handler.recalculate_thresholds_handler
+      Timeout: 30
+      Environment:
+        Variables:
+          THRESHOLDS_TABLE: !Ref ThresholdsTable
+          METRICS_TABLE: !Ref MetricsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ThresholdsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetricsTable
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Enabled: true
+
+  ############################################################
+  # 5. PROCESSING LAYER — STREAM / MICRO_BATCH / BATCH paths
+  ############################################################
+
+  # ---- STREAM path: analogue of Kinesis Data Streams + AWS Lambda ----
+  StreamProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-stream-processor-${Stage}"
+      CodeUri: ../src/
+      Handler: processing.stream_processor.lambda_handler
+      Timeout: 15
+      ReservedConcurrentExecutions: 30
+      Environment:
+        Variables:
+          PROCESSED_TABLE: !Ref ProcessedEventsTable
+          METRICS_TABLE: !Ref MetricsTable
+          SYSTEM_STATE_TABLE: !Ref SystemStateTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProcessedEventsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetricsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SystemStateTable
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt StreamQueue.Arn
+            BatchSize: 1        # STREAM = event-by-event, no batching (minimizes latency)
+
+  # ---- MICRO_BATCH path: analogue of Spark Streaming on EMR ----
+  MicroBatchProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-microbatch-processor-${Stage}"
+      CodeUri: ../src/
+      Handler: processing.microbatch_processor.lambda_handler
+      Timeout: 30
+      ReservedConcurrentExecutions: 10
+      Environment:
+        Variables:
+          PROCESSED_TABLE: !Ref ProcessedEventsTable
+          METRICS_TABLE: !Ref MetricsTable
+          SYSTEM_STATE_TABLE: !Ref SystemStateTable
+          DATALAKE_BUCKET: !Ref DataLakeBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProcessedEventsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetricsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SystemStateTable
+        - S3CrudPolicy:
+            BucketName: !Ref DataLakeBucket
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MicroBatchQueue.Arn
+            BatchSize: 50                      # accumulate mini-batches
+            MaximumBatchingWindowInSeconds: 5  # aligns with T_base default
+
+  # ---- BATCH path: analogue of Apache Spark batch job on EMR ----
+  BatchProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-batch-processor-${Stage}"
+      CodeUri: ../src/
+      Handler: processing.batch_processor.lambda_handler
+      Timeout: 60
+      Environment:
+        Variables:
+          PROCESSED_TABLE: !Ref ProcessedEventsTable
+          METRICS_TABLE: !Ref MetricsTable
+          DATALAKE_BUCKET: !Ref DataLakeBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProcessedEventsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetricsTable
+        - S3CrudPolicy:
+            BucketName: !Ref DataLakeBucket
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BatchQueue.Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 30
+
+  ############################################################
+  # 6. BASELINE PATH — fixed-interval processor for comparison (§2.6.1)
+  ############################################################
+
+  BaselineProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-baseline-processor-${Stage}"
+      CodeUri: ../src/
+      Handler: baseline.baseline_processor.lambda_handler
+      Timeout: 30
+      ReservedConcurrentExecutions: 4    # FIXED pool — simulates static resource allocation
+      Environment:
+        Variables:
+          PROCESSED_TABLE: !Ref ProcessedEventsTable
+          METRICS_TABLE: !Ref MetricsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProcessedEventsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetricsTable
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BaselineQueue.Arn
+            BatchSize: 50
+            MaximumBatchingWindowInSeconds: 5   # FIXED 5s window — no adaptivity
+
+  ############################################################
+  # 7. EVENT GENERATOR (experiment driver, invoked externally by run_experiment.py)
+  ############################################################
+
+  EventGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-event-generator-${Stage}"
+      CodeUri: ../src/
+      Handler: ingestion.event_generator.lambda_handler
+      Timeout: 300
+      Environment:
+        Variables:
+          RAW_QUEUE_URL: !Ref RawEventsQueue
+          BASELINE_QUEUE_URL: !Ref BaselineQueue
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt RawEventsQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt BaselineQueue.QueueName
+
+  ############################################################
+  # 8. CLOUDWATCH DASHBOARD (free tier: 3 dashboards)
+  ############################################################
+
+  AdpaDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ProjectName}-${Stage}"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Queue Depth (Backlog Q_t proxy)",
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${ProjectName}-raw-events-${Stage}"],
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${ProjectName}-stream-queue-${Stage}"],
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${ProjectName}-microbatch-queue-${Stage}"],
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${ProjectName}-baseline-queue-${Stage}"]
+                ],
+                "period": 10,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Concurrent Executions (R_t proxy)",
+                "metrics": [
+                  ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", "${ProjectName}-stream-processor-${Stage}"],
+                  ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", "${ProjectName}-microbatch-processor-${Stage}"],
+                  ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", "${ProjectName}-baseline-processor-${Stage}"]
+                ],
+                "period": 10,
+                "stat": "Maximum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  RawEventsQueueUrl:
+    Value: !Ref RawEventsQueue
+    Export:
+      Name: !Sub "${ProjectName}-raw-queue-url-${Stage}"
+  BaselineQueueUrl:
+    Value: !Ref BaselineQueue
+    Export:
+      Name: !Sub "${ProjectName}-baseline-queue-url-${Stage}"
+  EventGeneratorFunctionName:
+    Value: !Ref EventGeneratorFunction
+  MetricsTableName:
+    Value: !Ref MetricsTable
+  DataLakeBucketName:
+    Value: !Ref DataLakeBucket
+  EdgeApiUrl:
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/edge/ingest"
