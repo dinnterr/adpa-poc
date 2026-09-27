@@ -205,7 +205,7 @@ Resources:
       CodeUri: ../src/
       Handler: adpa_controller.controller_handler.lambda_handler
       Timeout: 30
-      ReservedConcurrentExecutions: 20
+#      ReservedConcurrentExecutions: 20
       Environment:
         Variables:
           STREAM_QUEUE_URL: !Ref StreamQueue
@@ -273,7 +273,7 @@ Resources:
       CodeUri: ../src/
       Handler: processing.stream_processor.lambda_handler
       Timeout: 15
-      ReservedConcurrentExecutions: 30
+#      ReservedConcurrentExecutions: 30
       Environment:
         Variables:
           PROCESSED_TABLE: !Ref ProcessedEventsTable
@@ -301,7 +301,7 @@ Resources:
       CodeUri: ../src/
       Handler: processing.microbatch_processor.lambda_handler
       Timeout: 30
-      ReservedConcurrentExecutions: 10
+#      ReservedConcurrentExecutions: 10
       Environment:
         Variables:
           PROCESSED_TABLE: !Ref ProcessedEventsTable
@@ -364,7 +364,7 @@ Resources:
       CodeUri: ../src/
       Handler: baseline.baseline_processor.lambda_handler
       Timeout: 30
-      ReservedConcurrentExecutions: 4    # FIXED pool — simulates static resource allocation
+#      ReservedConcurrentExecutions: 4    # FIXED pool — simulates static resource allocation
       Environment:
         Variables:
           PROCESSED_TABLE: !Ref ProcessedEventsTable
