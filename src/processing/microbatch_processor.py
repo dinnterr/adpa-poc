@@ -19,6 +19,7 @@ import os
 import time
 from collections import defaultdict
 from typing import Any, Dict, List
+from decimal import Decimal
 
 from common.aws_clients import table, s3_client
 from common.models import TransportEvent
@@ -75,7 +76,7 @@ def _persist_processed_events(events: List[TransportEvent], mode: str) -> None:
                     "mode": mode,
                     "priority": e.priority.value,
                     "payload": json.dumps(e.payload),
-                    "processed_at": time.time(),
+                    "processed_at": Decimal(str(time.time())),
                 }
             )
 

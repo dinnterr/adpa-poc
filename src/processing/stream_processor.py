@@ -14,6 +14,7 @@ import logging
 import os
 import time
 from typing import Any, Dict
+from decimal import Decimal
 
 from common.aws_clients import table
 from common.models import TransportEvent
@@ -34,7 +35,7 @@ def _persist_processed_event(transport_event: TransportEvent, mode: str) -> None
             "mode": mode,
             "priority": transport_event.priority.value,
             "payload": json.dumps(transport_event.payload),
-            "processed_at": time.time(),
+            "processed_at": Decimal(str(time.time())),
         }
     )
 

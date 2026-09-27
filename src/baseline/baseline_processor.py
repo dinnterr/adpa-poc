@@ -29,6 +29,7 @@ from typing import Any, Dict, List
 from common.aws_clients import table
 from common.models import TransportEvent
 from metrics.metrics_recorder import record_metric_batch
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -48,7 +49,7 @@ def _persist_processed_events(events: List[TransportEvent]) -> None:
                     "mode": "FIXED",
                     "priority": e.priority.value,
                     "payload": json.dumps(e.payload),
-                    "processed_at": time.time(),
+                    "processed_at": Decimal(str(time.time())),
                 }
             )
 
