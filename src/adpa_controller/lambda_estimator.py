@@ -25,7 +25,10 @@ def record_arrival(event_type: str) -> None:
     bucket = int(time.time())
     t.update_item(
         Key={"pk": f"ARRIVAL#{event_type}", "sk": str(bucket)},
-        UpdateExpression="ADD cnt :one SET ttl = :ttl",
+        UpdateExpression="ADD cnt :one SET #ttl = :ttl",
+        ExpressionAttributeNames={
+            "#ttl": "ttl",
+        },
         ExpressionAttributeValues={
             ":one": 1,
             ":ttl": bucket + WINDOW_SECONDS + 5,

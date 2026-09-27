@@ -52,9 +52,9 @@ def get_queue_depth(queue_url_str: str) -> int:
     """Real ApproximateNumberOfMessagesVisible — used as Q_t proxy."""
     resp = sqs_client().get_queue_attributes(
         QueueUrl=queue_url_str,
-        AttributeNames=["ApproximateNumberOfMessagesVisible"],
+        AttributeNames=["ApproximateNumberOfMessages"],
     )
-    return int(resp["Attributes"].get("ApproximateNumberOfMessagesVisible", 0))
+    return int(resp["Attributes"].get("ApproximateNumberOfMessages", 0))
 
 
 def send_message(queue_url_str: str, body: str, delay_seconds: int = 0) -> dict:
