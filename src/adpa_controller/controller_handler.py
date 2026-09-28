@@ -116,12 +116,50 @@ def _process_single_event(event: TransportEvent, theta) -> ProcessingDecision:
             lambda_t=lambda_t,
             theta=theta,
         )
-        resource_units = decide_resource_units(state.resource_units, load_factor, theta)
+
+        resource_units = decide_resource_units(
+            state.resource_units,
+            load_factor,
+            theta,
+        )
+
+        logger.info(
+            "ADPA DEBUG: mode=%s lambda=%.3f queue=%d cpu=%.1f "
+            "LF=%.3f theta_up=%.3f theta_down=%.3f R_old=%d R_new=%d",
+            mode.value,
+            lambda_t,
+            state.queue_depth,
+            cpu_proxy,
+            load_factor,
+            theta.theta_up,
+            theta.theta_down,
+            state.resource_units,
+            resource_units,
+        )
 
         if resource_units != state.resource_units:
+            logger.info(
+                "ADPA SCALE: mode=%s R=%d -> %d",
+                mode.value,
+                state.resource_units,
+                resource_units,
+            )
             apply_scaling_decision(mode.value, resource_units)
+
     else:
         resource_units = theta.R_predefined_batch
+
+        logger.info(
+            "ADPA DEBUG: mode=%s lambda=%.3f queue=%d cpu=%.1f "
+            "LF=N/A theta_up=%.3f theta_down=%.3f R=%d",
+            mode.value,
+            lambda_t,
+            state.queue_depth,
+            cpu_proxy,
+            theta.theta_up,
+            theta.theta_down,
+            resource_units,
+        )
 
     new_state = SystemState(
         cpu_percent=cpu_proxy,
@@ -158,6 +196,19 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     raw TransportEvent JSON messages from RawEventsQueue.
     """
     theta = load_thresholds()
+
+    logger.info(
+        "ADPA THRESHOLDS: theta_up=%.3f theta_down=%.3f "
+        "w1=%.2f w2=%.2f w3=%.2f Q_max=%d lambda_max=%.1f",
+        theta.theta_up,
+        theta.theta_down,
+        theta.w1,
+        theta.w2,
+        theta.w3,
+        theta.Q_max,
+        theta.lambda_max,
+    )
+
     records: List[Dict[str, Any]] = event.get("Records", [])
 
     processed = 0
