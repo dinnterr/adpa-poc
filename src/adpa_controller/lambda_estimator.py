@@ -19,18 +19,22 @@ from common.aws_clients import table
 WINDOW_SECONDS = 5
 
 
-def record_arrival(event_type: str) -> None:
-    """Increment the per-second, per-type arrival counter (TTL'd)."""
+def record_arrival(event_type: str, count: int = 1) -> None:
+    """Increment the per-second, per-type arrival counter (TTL'd).
+
+    Accepts `count` so a whole SQS batch's arrivals of the same type can be
+    folded into a single UpdateItem call instead of one call per event.
+    """
     t = table("SYSTEM_STATE_TABLE")
     bucket = int(time.time())
     t.update_item(
         Key={"pk": f"ARRIVAL#{event_type}", "sk": str(bucket)},
-        UpdateExpression="ADD cnt :one SET #ttl = :ttl",
+        UpdateExpression="ADD cnt :count SET #ttl = :ttl",
         ExpressionAttributeNames={
             "#ttl": "ttl",
         },
         ExpressionAttributeValues={
-            ":one": 1,
+            ":count": count,
             ":ttl": bucket + WINDOW_SECONDS + 5,
         },
     )

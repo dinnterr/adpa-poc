@@ -1,5 +1,5 @@
 """
-Generates matplotlib charts from the CSV exports produced by analyze_results.py
+Generates matplotlib charts from the CSV exports produced by analyze_results.py.py
 (--export-csv flag) — latency-over-time and resource-units-over-time plots,
 useful for illustrating §2.6 in the thesis defense presentation.
 """

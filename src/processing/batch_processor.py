@@ -71,6 +71,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     transport_events: List[TransportEvent] = []
     decisions_by_event_id: Dict[str, Dict[str, Any]] = {}
+    dispatch_time_by_event_id: Dict[str, float] = {}
 
     for record in records:
         try:
@@ -78,6 +79,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             te = TransportEvent.from_json(json.dumps(env["event"]))
             transport_events.append(te)
             decisions_by_event_id[te.event_id] = env["decision"]
+            dispatch_time_by_event_id[te.event_id] = env["controller_dispatch_time"]
         except Exception:  # noqa: BLE001
             logger.exception("Malformed batch envelope, skipping")
 
@@ -97,6 +99,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             resource_units_at_processing=decisions_by_event_id[te.event_id]["resource_units"],
             experiment_phase=te.experiment_phase,
             correlation_id=te.correlation_id,
+            dispatch_latency_seconds=dispatch_time_by_event_id[te.event_id] - te.timestamp,
+            queue_latency_seconds=start - dispatch_time_by_event_id[te.event_id],
+            handler_duration_seconds=end - start,
         )
         for te in transport_events
     ]

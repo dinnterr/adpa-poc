@@ -1,7 +1,7 @@
 """
 Unit tests for the pure ADPA algorithm functions (§2.3.2 - §2.3.4).
-These require NO AWS credentials — they test only classifier.py,
-interval.py, and load_factor.py in isolation, matching the O(1)
+These require NO AWS credentials — they test only classifier.py.py,
+interval.py.py, and load_factor.py.py in isolation, matching the O(1)
 complexity claims made in the thesis.
 """
 
@@ -24,7 +24,7 @@ def theta():
     return Thresholds()
 
 
-# ---------- classifier.py ----------
+# ---------- classifier.py.py ----------
 
 def test_high_priority_is_always_critical(theta):
     e = TransportEvent.create(EventType.GPS, Priority.HIGH)
@@ -57,7 +57,7 @@ def test_class_to_mode_mapping(theta):
     assert map_class_to_mode(EventClass.HISTORICAL_ANALYTICAL) == ProcessingMode.BATCH
 
 
-# ---------- interval.py ----------
+# ---------- interval.py.py ----------
 
 def test_clamp_bounds():
     assert clamp(5, 1, 10) == 5
@@ -109,7 +109,7 @@ def test_delta_t_monotonicity_wrt_queue(theta):
     assert dt_high_q <= dt_low_q
 
 
-# ---------- load_factor.py ----------
+# ---------- load_factor.py.py ----------
 
 def test_load_factor_zero_when_all_metrics_zero(theta):
     lf = compute_load_factor(cpu_percent=0, queue_depth=0, lambda_t=0, theta=theta)

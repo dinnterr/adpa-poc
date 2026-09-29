@@ -5,7 +5,7 @@ Threshold set Theta = (theta_stream, Q_high, CPU_high, CPU_low, lambda_low,
                         SLA_target, alpha)
 
 These are the DEFAULT values used to seed DynamoDB on first run. After that,
-the feedback loop in §2.3.6 (controller_handler.recalculate_thresholds_handler)
+the feedback loop in §2.3.6 (controller_handler.py.recalculate_thresholds_handler)
 mutates theta_up over time based on observed P95 latency.
 """
 
@@ -19,16 +19,16 @@ class Thresholds:
     # --- Classification (§2.3.2) ---
     theta_stream: float = 5.0          # events/sec threshold for "dense enough" continuous stream
 
-    # --- Adaptive interval correction (§2.3.3) ---
+    # --- Adaptive interval.py correction (§2.3.3) ---
     T_base: float = 5.0                # seconds, base micro-batch window
     T_min: float = 1.0
     T_max: float = 15.0
-    Q_high: int = 50                   # backlog threshold that triggers interval shrink
-    CPU_high: float = 75.0             # % CPU that triggers interval shrink
-    CPU_low: float = 25.0              # % CPU that allows interval growth
+    Q_high: int = 50                   # backlog threshold that triggers interval.py shrink
+    CPU_high: float = 75.0             # % CPU that triggers interval.py shrink
+    CPU_low: float = 25.0              # % CPU that allows interval.py growth
     lambda_low: float = 5.0            # events/sec, low-intensity condition for growth
-    k_dec: float = 0.5                 # interval shrink multiplier
-    k_inc: float = 1.5                 # interval growth multiplier
+    k_dec: float = 0.5                 # interval.py shrink multiplier
+    k_inc: float = 1.5                 # interval.py growth multiplier
 
     # --- Load factor (§2.3.4) ---
     w1: float = 0.5                    # CPU weight

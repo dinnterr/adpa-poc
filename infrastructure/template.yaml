@@ -180,7 +180,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${ProjectName}-edge-handler-${Stage}"
       CodeUri: ../src/
-      Handler: edge.edge_handler.lambda_handler
+      Handler: edge.edge_handler.py.lambda_handler
       Environment:
         Variables:
           RAW_QUEUE_URL: !Ref RawEventsQueue
@@ -203,7 +203,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${ProjectName}-adpa-controller-${Stage}"
       CodeUri: ../src/
-      Handler: adpa_controller.controller_handler.lambda_handler
+      Handler: adpa_controller.controller_handler.py.lambda_handler
       Timeout: 30
 #      ReservedConcurrentExecutions: 20
       Environment:
@@ -243,17 +243,29 @@ Resources:
     Properties:
       FunctionName: !Sub "${ProjectName}-threshold-recalc-${Stage}"
       CodeUri: ../src/
-      Handler: adpa_controller.controller_handler.recalculate_thresholds_handler
+      Handler: adpa_controller.controller_handler.py.recalculate_thresholds_handler
       Timeout: 30
       Environment:
         Variables:
           THRESHOLDS_TABLE: !Ref ThresholdsTable
           METRICS_TABLE: !Ref MetricsTable
+          SYSTEM_STATE_TABLE: !Ref SystemStateTable
+          STREAM_FUNCTION_NAME: !Ref StreamProcessorFunction
+          MICROBATCH_FUNCTION_NAME: !Ref MicroBatchProcessorFunction
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref ThresholdsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref MetricsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SystemStateTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:PutFunctionConcurrency
+              Resource:
+                - !GetAtt StreamProcessorFunction.Arn
+                - !GetAtt MicroBatchProcessorFunction.Arn
       Events:
         Schedule:
           Type: Schedule
@@ -271,7 +283,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${ProjectName}-stream-processor-${Stage}"
       CodeUri: ../src/
-      Handler: processing.stream_processor.lambda_handler
+      Handler: processing.stream_processor.py.lambda_handler
       Timeout: 15
 #      ReservedConcurrentExecutions: 30
       Environment:
@@ -299,7 +311,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${ProjectName}-microbatch-processor-${Stage}"
       CodeUri: ../src/
-      Handler: processing.microbatch_processor.lambda_handler
+      Handler: processing.microbatch_processor.py.lambda_handler
       Timeout: 30
 #      ReservedConcurrentExecutions: 10
       Environment:
@@ -331,7 +343,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${ProjectName}-batch-processor-${Stage}"
       CodeUri: ../src/
-      Handler: processing.batch_processor.lambda_handler
+      Handler: processing.batch_processor.py.lambda_handler
       Timeout: 60
       Environment:
         Variables:
@@ -354,7 +366,7 @@ Resources:
             MaximumBatchingWindowInSeconds: 30
 
   ############################################################
-  # 6. BASELINE PATH — fixed-interval processor for comparison (§2.6.1)
+  # 6. BASELINE PATH — fixed-interval.py processor for comparison (§2.6.1)
   ############################################################
 
   BaselineProcessorFunction:
@@ -362,7 +374,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${ProjectName}-baseline-processor-${Stage}"
       CodeUri: ../src/
-      Handler: baseline.baseline_processor.lambda_handler
+      Handler: baseline.baseline_processor.py.lambda_handler
       Timeout: 30
 #      ReservedConcurrentExecutions: 4    # FIXED pool — simulates static resource allocation
       Environment:
@@ -383,7 +395,7 @@ Resources:
             MaximumBatchingWindowInSeconds: 5   # FIXED 5s window — no adaptivity
 
   ############################################################
-  # 7. EVENT GENERATOR (experiment driver, invoked externally by run_experiment.py)
+  # 7. EVENT GENERATOR (experiment driver, invoked externally by run_experiment.py.py)
   ############################################################
 
   EventGeneratorFunction:
@@ -391,7 +403,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${ProjectName}-event-generator-${Stage}"
       CodeUri: ../src/
-      Handler: ingestion.event_generator.lambda_handler
+      Handler: ingestion.event_generator.py.lambda_handler
       Timeout: 300
       Environment:
         Variables:

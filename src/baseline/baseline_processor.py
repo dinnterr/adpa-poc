@@ -10,8 +10,8 @@ Baseline (control group) processor — §2.6.1.
 Implementation:
   - ALL events, regardless of priority/type, go through ONE queue
     (BaselineQueue) with a FIXED 5-second batching window
-    (MaximumBatchingWindowInSeconds: 5 in template.yaml).
-  - The Lambda's ReservedConcurrentExecutions is FIXED at 4 (template.yaml)
+    (MaximumBatchingWindowInSeconds: 5 in template.yaml.yaml).
+  - The Lambda's ReservedConcurrentExecutions is FIXED at 4 (template.yaml.yaml)
     and NEVER changed — no adaptive scaling, no classification.
   - No routing by criticality: critical events wait in the same queue
     as GPS pings, which is exactly what produces the high latency for
@@ -34,7 +34,7 @@ from decimal import Decimal
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-FIXED_RESOURCE_UNITS = 4  # must match ReservedConcurrentExecutions in template.yaml
+FIXED_RESOURCE_UNITS = 4  # must match ReservedConcurrentExecutions in template.yaml.yaml
 
 
 def _persist_processed_events(events: List[TransportEvent]) -> None:
@@ -81,6 +81,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             resource_units_at_processing=FIXED_RESOURCE_UNITS,
             experiment_phase=te.experiment_phase,
             correlation_id=te.correlation_id,
+            # No controller hop in the baseline pipeline: the entire wait
+            # (queueing + fixed batching window) shows up as queue latency,
+            # not dispatch latency, so it stays comparable with ADPA's
+            # dispatch/queue/handler split rather than double-counting.
+            dispatch_latency_seconds=0.0,
+            queue_latency_seconds=start - te.timestamp,
+            handler_duration_seconds=end - start,
         )
         for te in transport_events
     ]

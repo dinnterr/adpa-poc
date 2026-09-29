@@ -49,12 +49,25 @@ def queue_url(env_var: str) -> str:
 
 
 def get_queue_depth(queue_url_str: str) -> int:
-    """Real ApproximateNumberOfMessagesVisible — used as Q_t proxy."""
+    """
+    Q_t proxy — total backlog on the queue: messages still waiting
+    (ApproximateNumberOfMessages) PLUS messages already picked up by a
+    consumer but not yet finished processing (ApproximateNumberOfMessagesNotVisible).
+
+    Using only the "visible" count underestimates backlog under real
+    overload: once a Lambda's SQS poller pulls a message it immediately
+    becomes "not visible" even though it hasn't been processed yet, so a
+    queue that is fully saturated with slow-to-process messages can still
+    report a visible count of ~0.
+    """
     resp = sqs_client().get_queue_attributes(
         QueueUrl=queue_url_str,
-        AttributeNames=["ApproximateNumberOfMessages"],
+        AttributeNames=["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
     )
-    return int(resp["Attributes"].get("ApproximateNumberOfMessages", 0))
+    attrs = resp["Attributes"]
+    visible = int(attrs.get("ApproximateNumberOfMessages", 0))
+    in_flight = int(attrs.get("ApproximateNumberOfMessagesNotVisible", 0))
+    return visible + in_flight
 
 
 def send_message(queue_url_str: str, body: str, delay_seconds: int = 0) -> dict:

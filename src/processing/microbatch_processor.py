@@ -3,8 +3,8 @@ MICRO_BATCH path processor — analogue of "Spark Streaming on Amazon EMR"
 for CONTINUOUS_MONITORING events (GPS, traffic sensors, camera metadata).
 
 Triggered by SQS with BatchSize=50 and MaximumBatchingWindowInSeconds=5
-(template.yaml) — Lambda's own SQS batching window approximates the
-delta_t computed by interval.py. The *actual* delta_t value chosen by the
+(template.yaml.yaml) — Lambda's own SQS batching window approximates the
+delta_t computed by interval.py.py. The *actual* delta_t value chosen by the
 controller for each event is carried in the message envelope for
 experimental logging (we can't dynamically change the Lambda's own SQS
 event-source-mapping batching window per-message, so we log the *intended*
@@ -95,11 +95,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     transport_events: List[TransportEvent] = []
     decisions_by_event_id: Dict[str, Dict[str, Any]] = {}
+    dispatch_time_by_event_id: Dict[str, float] = {}
 
     for env in envelopes:
         te = TransportEvent.from_json(json.dumps(env["event"]))
         transport_events.append(te)
         decisions_by_event_id[te.event_id] = env["decision"]
+        dispatch_time_by_event_id[te.event_id] = env["controller_dispatch_time"]
 
     batch_processing_start = time.time()
     grouped = _aggregate_by_type(transport_events)
@@ -114,6 +116,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     metric_records = []
     for te in transport_events:
         decision = decisions_by_event_id[te.event_id]
+        dispatch_time = dispatch_time_by_event_id[te.event_id]
         latency = batch_processing_end - te.timestamp
         metric_records.append(
             dict(
@@ -126,6 +129,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 resource_units_at_processing=decision["resource_units"],
                 experiment_phase=te.experiment_phase,
                 correlation_id=te.correlation_id,
+                dispatch_latency_seconds=dispatch_time - te.timestamp,
+                queue_latency_seconds=batch_processing_start - dispatch_time,
+                handler_duration_seconds=batch_processing_end - batch_processing_start,
             )
         )
 

@@ -7,9 +7,9 @@ profile from §2.6.2:
     Phase 3 (Decline, 120-180s): lambda_low = 15 events/sec
 
 Can run either:
-  (a) as a Lambda invoked by experiment/run_experiment.py with a
+  (a) as a Lambda invoked by experiment/run_experiment.py.py with a
       {"duration_seconds": N, "phase": "..."} payload for one phase burst, or
-  (b) imported directly as a library by run_experiment.py for local-driven
+  (b) imported directly as a library by run_experiment.py.py for local-driven
       generation (recommended — gives precise client-side timing control
       not subject to Lambda's own cold starts).
 
@@ -131,7 +131,7 @@ def dispatch_events_batch(
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
-    Optional Lambda entry point (invoked by run_experiment.py via boto3
+    Optional Lambda entry point (invoked by run_experiment.py.py via boto3
     if you prefer server-side generation instead of local-driven dispatch).
 
     Payload:

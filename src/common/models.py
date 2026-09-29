@@ -134,7 +134,8 @@ class SystemState:
     In the serverless Free-Tier reimplementation:
       CPU_t  -> proxy derived from Lambda concurrent executions / reserved concurrency
       MEM_t  -> proxy derived from average Lambda duration vs timeout (not critical to ADPA math)
-      Q_t    -> ApproximateNumberOfMessagesVisible on the routing queue (real backlog)
+      Q_t    -> ApproximateNumberOfMessages + ApproximateNumberOfMessagesNotVisible
+                on the routing queue (real backlog: waiting + in-flight)
       R_t    -> currently allocated "resource units" (simulated executor/concurrency count)
     """
     cpu_percent: float
@@ -172,7 +173,7 @@ class ProcessingDecision:
             "mode": self.mode.value,
             "resource_units": self.resource_units,
             "delta_t": self.delta_t,
-            "load_factor": self.load_factor,
+            "load_factor.py": self.load_factor,
         }
 
 
@@ -181,6 +182,21 @@ class MetricRecord:
     """
     One row of experimental observation, matching the columns needed
     to reproduce Table 2.1 and Table 2.2 of the thesis.
+
+    latency_seconds is the total end-to-end latency (processing finished -
+    event created), kept for backward compatibility with Table 2.1/2.2.
+
+    The three fields below break that total down into where it was spent,
+    so a regression can be attributed instead of showing up only as one
+    opaque number:
+      dispatch_latency_seconds -> event created -> controller routed it
+                                  (classification/routing overhead)
+      queue_latency_seconds    -> controller routed it -> processor picked
+                                  it up (real queueing / backlog wait; for
+                                  baseline this is the whole pre-processing
+                                  wait, since there is no controller hop)
+      handler_duration_seconds -> processor picked it up -> processor
+                                  finished (actual business-logic work)
     """
     event_id: str
     system: str                # "baseline" | "adpa"
@@ -192,6 +208,9 @@ class MetricRecord:
     experiment_phase: Optional[str]
     processed_at: float = field(default_factory=time.time)
     correlation_id: Optional[str] = None
+    dispatch_latency_seconds: Optional[float] = None
+    queue_latency_seconds: Optional[float] = None
+    handler_duration_seconds: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

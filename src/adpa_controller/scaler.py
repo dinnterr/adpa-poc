@@ -1,5 +1,5 @@
 """
-Applies the resource decision from load_factor.decide_resource_units() to
+Applies the resource decision from load_factor.py.decide_resource_units() to
 the *real* AWS Lambda ReservedConcurrentExecutions setting on the
 STREAM and MICRO_BATCH processor functions.
 
@@ -29,7 +29,7 @@ def apply_resource_units(function_name: str, resource_units: int) -> None:
     NOTE: This is throttled defensively — AWS allows a limited number of
     PutFunctionConcurrency calls per second, and Free Tier accounts have a
     total account concurrency ceiling (commonly 1000, but unreserved pool
-    must stay >= 10). We never request more than theta.R_max (§load_factor.py).
+    must stay >= 10). We never request more than theta.R_max (§load_factor.py.py).
     """
     if not function_name:
         logger.warning("No function name configured for scaling; skipping.")

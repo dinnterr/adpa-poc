@@ -6,7 +6,7 @@ Table layout:
 
 This layout allows efficient range queries by (system, mode) + time window,
 which is exactly what recalculate_thresholds_handler() and
-experiment/analyze_results.py need.
+experiment/analyze_results.py.py need.
 """
 
 from __future__ import annotations
@@ -49,6 +49,9 @@ def record_metric(
     experiment_phase: Optional[str] = None,
     correlation_id: Optional[str] = None,
     ttl_seconds: int = 7 * 24 * 3600,
+    dispatch_latency_seconds: Optional[float] = None,
+    queue_latency_seconds: Optional[float] = None,
+    handler_duration_seconds: Optional[float] = None,
 ) -> None:
     t = table("METRICS_TABLE")
     now = time.time()
@@ -66,6 +69,9 @@ def record_metric(
         "correlation_id": correlation_id or "",
         "processed_at": now,
         "ttl": int(now) + ttl_seconds,
+        "dispatch_latency_seconds": dispatch_latency_seconds,
+        "queue_latency_seconds": queue_latency_seconds,
+        "handler_duration_seconds": handler_duration_seconds,
     }
     t.put_item(Item=_to_decimal(item))
 
@@ -91,6 +97,9 @@ def record_metric_batch(records: List[Dict[str, Any]]) -> None:
                 "correlation_id": r.get("correlation_id") or "",
                 "processed_at": now,
                 "ttl": int(now) + 7 * 24 * 3600,
+                "dispatch_latency_seconds": r.get("dispatch_latency_seconds"),
+                "queue_latency_seconds": r.get("queue_latency_seconds"),
+                "handler_duration_seconds": r.get("handler_duration_seconds"),
             }
             batch.put_item(Item=_to_decimal(item))
 

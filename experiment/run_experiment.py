@@ -2,7 +2,7 @@
 Drives the §2.6 experiment: generates the same three-phase synthetic load
 against BOTH the baseline pipeline and the ADPA pipeline, in separate runs
 identified by distinct correlation_ids, then leaves the results in
-MetricsTable for analyze_results.py to summarise into Table 2.1 / Table 2.2.
+MetricsTable for analyze_results.py.py to summarise into Table 2.1 / Table 2.2.
 
 Usage:
     python experiment/run_experiment.py --system baseline
@@ -123,7 +123,7 @@ def main():
 
     print("\nWait ~60-120s for queues to fully drain, then run:")
     for system, r in results.items():
-        print(f"  python experiment/analyze_results.py --correlation-id {r['correlation_id']} --system {system}")
+        print(f"  python experiment/analyze_results.py.py --correlation-id {r['correlation_id']} --system {system}")
 
 
 if __name__ == "__main__":

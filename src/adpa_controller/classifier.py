@@ -30,7 +30,7 @@ def classify(event: TransportEvent, theta: Thresholds, current_lambda_for_type: 
     current_lambda_for_type : float
         lambda(type_i) — the currently observed intensity (events/sec) for
         this specific event type, computed by the caller from a sliding
-        window over recent arrivals (see controller_handler._estimate_lambda).
+        window over recent arrivals (see controller_handler.py._estimate_lambda).
     """
     if event.priority == Priority.HIGH or event.type in T_CRITICAL:
         return EventClass.CRITICAL

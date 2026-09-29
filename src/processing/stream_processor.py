@@ -2,7 +2,7 @@
 STREAM path processor — analogue of "Amazon Kinesis Data Streams + AWS Lambda"
 for CRITICAL events (§2.3.2 table, §2.2).
 
-Triggered by SQS with BatchSize=1 (see template.yaml) to minimise added
+Triggered by SQS with BatchSize=1 (see template.yaml.yaml) to minimise added
 latency — each critical event is processed the instant it's dequeued,
 with no batching window.
 """
@@ -59,6 +59,9 @@ def _handle_single_record(record: Dict[str, Any]) -> None:
     processing_end = time.time()
 
     end_to_end_latency = processing_end - transport_event.timestamp
+    dispatch_latency = dispatch_time - transport_event.timestamp
+    queue_latency = processing_start - dispatch_time
+    handler_duration = processing_end - processing_start
 
     record_metric(
         event_id=transport_event.event_id,
@@ -70,12 +73,15 @@ def _handle_single_record(record: Dict[str, Any]) -> None:
         resource_units_at_processing=decision["resource_units"],
         experiment_phase=transport_event.experiment_phase,
         correlation_id=transport_event.correlation_id,
+        dispatch_latency_seconds=dispatch_latency,
+        queue_latency_seconds=queue_latency,
+        handler_duration_seconds=handler_duration,
     )
 
     logger.info(
-        "STREAM processed event %s latency=%.4fs anomaly=%s dispatch_to_process=%.4fs",
+        "STREAM processed event %s latency=%.4fs anomaly=%s dispatch=%.4fs queue=%.4fs handler=%.4fs",
         transport_event.event_id, end_to_end_latency, is_anomaly,
-        processing_start - dispatch_time,
+        dispatch_latency, queue_latency, handler_duration,
     )
 
 

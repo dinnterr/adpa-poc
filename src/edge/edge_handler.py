@@ -52,7 +52,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         transport_event = TransportEvent.create(
             event_type=EventType(body["type"]),
-            priority=__import__("common.models", fromlist=["Priority"]).Priority(body.get("priority", "MEDIUM")),
+            priority=__import__("common.models.py", fromlist=["Priority"]).Priority(body.get("priority", "MEDIUM")),
             payload=body.get("payload", {}),
             observed_lambda=body.get("observed_lambda"),
             experiment_phase=body.get("experiment_phase"),

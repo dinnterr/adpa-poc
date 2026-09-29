@@ -15,15 +15,15 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List
+from collections import Counter, defaultdict
+from typing import Any, Dict, List, Tuple
 
-from common.aws_clients import send_message, get_queue_depth, queue_url
+from common.aws_clients import send_message_batch, get_queue_depth, queue_url
 from common.models import (
     TransportEvent,
     SystemState,
-    ProcessingDecision,
+    EventClass,
     ProcessingMode,
-    MetricRecord,
 )
 from adpa_controller.classifier import classify, map_class_to_mode
 from adpa_controller.interval import compute_delta_t
@@ -46,6 +46,13 @@ MODE_QUEUE_ENV = {
     ProcessingMode.MICRO_BATCH: "MICROBATCH_QUEUE_URL",
     ProcessingMode.BATCH: "BATCH_QUEUE_URL",
 }
+
+_SQS_SEND_BATCH_LIMIT = 10  # AWS SendMessageBatch hard limit
+
+
+def _chunked(items: List[Any], size: int) -> List[List[Any]]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
 
 # Fixed CPU proxy model: we don't have real CPU% in Lambda, so we derive a
 # proxy from *current concurrency utilisation* = active_estimate / R_t.
@@ -80,15 +87,42 @@ def _get_or_init_state(mode: ProcessingMode, queue_url_str: str, default_units: 
     return state
 
 
-def _process_single_event(event: TransportEvent, theta) -> ProcessingDecision:
-    """Implements ADPA algorithm steps 1-17 of §2.3.5 for one event."""
+# One (record, event, event_class, lambda_t) tuple per event routed to a mode.
+_ModeItem = Tuple[Dict[str, Any], TransportEvent, EventClass, float]
 
-    record_arrival(event.type.value)
-    lambda_t = estimate_lambda(event.type.value)
 
-    event_class = classify(event, theta, lambda_t)
-    mode = map_class_to_mode(event_class)
+def _classify_and_group(
+    parsed: List[Tuple[Dict[str, Any], TransportEvent]], theta
+) -> Dict[ProcessingMode, List[_ModeItem]]:
+    """Implements ADPA algorithm steps 1-8 of §2.3.5 for a WHOLE SQS batch.
 
+    lambda(type_i) is a property of the stream, not of a single event, so
+    it — and the arrival-window update it depends on — only needs to be
+    computed once per distinct event type in the batch, not once per event.
+    Doing 2 DynamoDB round-trips per event here (as opposed to once per type)
+    is what previously made "dispatch" latency scale with batch/backlog size
+    instead of staying flat like the baseline pipeline's.
+    """
+    type_counts = Counter(te.type.value for _, te in parsed)
+    for event_type, count in type_counts.items():
+        record_arrival(event_type, count)
+    lambda_by_type = {event_type: estimate_lambda(event_type) for event_type in type_counts}
+
+    by_mode: Dict[ProcessingMode, List[_ModeItem]] = defaultdict(list)
+    for record, te in parsed:
+        lambda_t = lambda_by_type[te.type.value]
+        event_class = classify(te, theta, lambda_t)
+        mode = map_class_to_mode(event_class)
+        by_mode[mode].append((record, te, event_class, lambda_t))
+    return by_mode
+
+
+def _dispatch_mode_batch(mode: ProcessingMode, mode_items: List[_ModeItem], theta) -> int:
+    """Implements ADPA algorithm steps 9-18 of §2.3.5 for all same-mode events
+    in this SQS batch at once: one queue-depth/state read, one scaling
+    decision and one state write per mode per invocation (instead of per
+    event), then a single SendMessageBatch call per queue.
+    """
     queue_env = MODE_QUEUE_ENV[mode]
     q_url = queue_url(queue_env)
 
@@ -97,69 +131,27 @@ def _process_single_event(event: TransportEvent, theta) -> ProcessingDecision:
 
     cpu_proxy = _cpu_proxy(mode, state.queue_depth, max(state.resource_units, 1))
 
-    delta_t = None
-    if mode == ProcessingMode.MICRO_BATCH:
-        delta_t = compute_delta_t(
-            queue_depth=state.queue_depth,
-            cpu_percent=cpu_proxy,
-            lambda_t=lambda_t,
-            theta=theta,
-        )
-
-    load_factor = None
-    resource_units = state.resource_units
-
     if mode in (ProcessingMode.STREAM, ProcessingMode.MICRO_BATCH):
+        # Representative lambda_t for this mode's slice of the batch: the
+        # busiest of the event types routed here, so scaling reacts to the
+        # heaviest contributor rather than diluting it with lighter ones.
+        representative_lambda = max(lambda_t for _, _, _, lambda_t in mode_items)
         load_factor = compute_load_factor(
             cpu_percent=cpu_proxy,
             queue_depth=state.queue_depth,
-            lambda_t=lambda_t,
+            lambda_t=representative_lambda,
             theta=theta,
         )
-
-        resource_units = decide_resource_units(
-            state.resource_units,
-            load_factor,
-            theta,
-        )
-
-        logger.info(
-            "ADPA DEBUG: mode=%s lambda=%.3f queue=%d cpu=%.1f "
-            "LF=%.3f theta_up=%.3f theta_down=%.3f R_old=%d R_new=%d",
-            mode.value,
-            lambda_t,
-            state.queue_depth,
-            cpu_proxy,
-            load_factor,
-            theta.theta_up,
-            theta.theta_down,
-            state.resource_units,
-            resource_units,
-        )
-
-        if resource_units != state.resource_units:
-            logger.info(
-                "ADPA SCALE: mode=%s R=%d -> %d",
-                mode.value,
-                state.resource_units,
-                resource_units,
-            )
-            apply_scaling_decision(mode.value, resource_units)
-
+        resource_units = decide_resource_units(state.resource_units, load_factor, theta)
+        # NOTE: the decided resource_units is only persisted to SystemStateTable
+        # here (cheap DynamoDB write). The *real* AWS ReservedConcurrentExecutions
+        # change is applied out-of-band by recalculate_thresholds_handler(), never
+        # synchronously in this path — PutFunctionConcurrency is a slow
+        # control-plane call and would otherwise stall this Lambda invocation (and
+        # every other message in its SQS batch) for seconds, directly inflating
+        # the very latency this controller is supposed to minimise.
     else:
         resource_units = theta.R_predefined_batch
-
-        logger.info(
-            "ADPA DEBUG: mode=%s lambda=%.3f queue=%d cpu=%.1f "
-            "LF=N/A theta_up=%.3f theta_down=%.3f R=%d",
-            mode.value,
-            lambda_t,
-            state.queue_depth,
-            cpu_proxy,
-            theta.theta_up,
-            theta.theta_down,
-            resource_units,
-        )
 
     new_state = SystemState(
         cpu_percent=cpu_proxy,
@@ -169,25 +161,40 @@ def _process_single_event(event: TransportEvent, theta) -> ProcessingDecision:
     )
     save_system_state(mode.value, new_state)
 
-    # --- Route the event (§2.3.5 step 18) ---
-    envelope = {
-        "event": json.loads(event.to_json()),
-        "decision": {
-            "mode": mode.value,
-            "delta_t": delta_t,
-            "resource_units": resource_units,
-        },
-        "controller_dispatch_time": time.time(),
-    }
-    send_message(q_url, json.dumps(envelope))
+    # --- Route the events (§2.3.5 step 18) ---
+    controller_dispatch_time = time.time()
+    entries = []
+    for idx, (record, te, event_class, lambda_t) in enumerate(mode_items):
+        delta_t = None
+        if mode == ProcessingMode.MICRO_BATCH:
+            delta_t = compute_delta_t(
+                queue_depth=state.queue_depth,
+                cpu_percent=cpu_proxy,
+                lambda_t=lambda_t,
+                theta=theta,
+            )
+        envelope = {
+            "event": json.loads(te.to_json()),
+            "decision": {
+                "mode": mode.value,
+                "delta_t": delta_t,
+                "resource_units": resource_units,
+            },
+            "controller_dispatch_time": controller_dispatch_time,
+        }
+        entries.append({"Id": str(idx), "MessageBody": json.dumps(envelope)})
+        logger.info(
+            "Routed event %s -> class=%s mode=%s R=%d delta_t=%s",
+            te.event_id, event_class.value, mode.value, resource_units, delta_t,
+        )
 
-    return ProcessingDecision(
-        event_class=event_class,
-        mode=mode,
-        resource_units=resource_units,
-        delta_t=delta_t,
-        load_factor=load_factor,
-    )
+    for chunk in _chunked(entries, _SQS_SEND_BATCH_LIMIT):
+        resp = send_message_batch(q_url, chunk)
+        failed = resp.get("Failed")
+        if failed:
+            logger.warning("SendMessageBatch had %d partial failures on %s: %s", len(failed), q_url, failed)
+
+    return len(entries)
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -196,41 +203,41 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     raw TransportEvent JSON messages from RawEventsQueue.
     """
     theta = load_thresholds()
-
-    logger.info(
-        "ADPA THRESHOLDS: theta_up=%.3f theta_down=%.3f "
-        "w1=%.2f w2=%.2f w3=%.2f Q_max=%d lambda_max=%.1f",
-        theta.theta_up,
-        theta.theta_down,
-        theta.w1,
-        theta.w2,
-        theta.w3,
-        theta.Q_max,
-        theta.lambda_max,
-    )
-
     records: List[Dict[str, Any]] = event.get("Records", [])
 
-    processed = 0
+    parsed: List[Tuple[Dict[str, Any], TransportEvent]] = []
     batch_item_failures = []
 
     for record in records:
         try:
-            body = record["body"]
-            transport_event = TransportEvent.from_json(body)
-            decision = _process_single_event(transport_event, theta)
-            logger.info(
-                "Routed event %s -> class=%s mode=%s R=%d delta_t=%s",
-                transport_event.event_id,
-                decision.event_class.value,
-                decision.mode.value,
-                decision.resource_units,
-                decision.delta_t,
-            )
-            processed += 1
+            parsed.append((record, TransportEvent.from_json(record["body"])))
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to process record: %s", exc)
+            logger.exception("Failed to parse record: %s", exc)
             batch_item_failures.append({"itemIdentifier": record.get("messageId")})
+
+    if not parsed:
+        return {"processed": 0, "batchItemFailures": batch_item_failures}
+
+    try:
+        by_mode = _classify_and_group(parsed, theta)
+    except Exception as exc:  # noqa: BLE001
+        # Nothing has been dispatched yet at this point, so it's safe to fail
+        # every record in the batch for a clean SQS retry.
+        logger.exception("Failed to classify/route event batch: %s", exc)
+        batch_item_failures.extend({"itemIdentifier": record.get("messageId")} for record, _ in parsed)
+        return {"processed": 0, "batchItemFailures": batch_item_failures}
+
+    processed = 0
+    for mode, mode_items in by_mode.items():
+        try:
+            processed += _dispatch_mode_batch(mode, mode_items, theta)
+        except Exception as exc:  # noqa: BLE001
+            # Scoped to this mode only: other modes in the same invocation may
+            # have already been dispatched, and must not be retried/duplicated.
+            logger.exception("Failed to dispatch mode=%s batch: %s", mode.value, exc)
+            batch_item_failures.extend(
+                {"itemIdentifier": record.get("messageId")} for record, _, _, _ in mode_items
+            )
 
     return {"processed": processed, "batchItemFailures": batch_item_failures}
 
@@ -272,6 +279,16 @@ def recalculate_thresholds_handler(event: Dict[str, Any], context: Any) -> Dict[
         "Feedback loop: P95_latency=%.3fs SLA_target=%.3fs theta_up %.3f -> %.3f",
         p95_latency, theta.SLA_target, old_theta_up, new_theta_up,
     )
+
+    # Reconcile real Lambda concurrency with the resource_units the per-batch
+    # controller has decided (§2.3.4/§2.3.5). Deliberately done here, on the
+    # 1-minute schedule, rather than synchronously in _dispatch_mode_batch —
+    # PutFunctionConcurrency is a slow AWS control-plane call and must never
+    # sit on the critical event-processing path.
+    for mode in (ProcessingMode.STREAM, ProcessingMode.MICRO_BATCH):
+        mode_state = load_system_state(mode.value)
+        if mode_state is not None:
+            apply_scaling_decision(mode.value, mode_state.resource_units)
 
     return {
         "updated": True,
